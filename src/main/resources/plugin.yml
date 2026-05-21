@@ -1,0 +1,40 @@
+name: LanetworkTeleport
+version: '1.0'
+main: lanetwork.teleport.Teleport
+api-version: '1.21.11'
+description: Comprehensive proprietary teleportation system.
+author: lanetwork
+
+commands:
+  tpa:
+    description: Ask to teleport to a player.
+    usage: /tpa <player>
+  tpahere:
+    description: Ask a player to teleport to you.
+    usage: /tpahere <player>
+  tpahereall:
+    description: Send a tpahere request to everyone online.
+    usage: /tpahereall
+  tpaccept:
+    description: Accept a pending teleport request.
+    usage: /tpaccept
+  tpadeny:
+    description: Deny a pending teleport request.
+    usage: /tpadeny
+  tpatoggle:
+    description: Toggle receiving incoming teleport requests.
+    usage: /tpatoggle
+  tpaignore:
+    description: Block a specific player from sending you requests.
+    usage: /tpaignore <player>
+  tpaunignore:
+    description: Unblock a previously ignored player.
+    usage: /tpaunignore <player>
+  rtp:
+    description: Randomly teleport across world dimensions or specific radii boundaries
+    usage: /rtp [world/radius] [radius]
+  rtpmenu:
+    description: Open the GUI dashboard panel selection array.
+  teleportconfig:
+    description: Control administration reloads live or open configuration GUI.
+    usage: /teleportconfig reload

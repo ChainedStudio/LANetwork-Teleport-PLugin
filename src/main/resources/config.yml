@@ -1,0 +1,43 @@
+# lanetwork Teleport Configuration File
+
+tpa:
+  timeout: 60
+
+rtp:
+  min-radius: 1000
+  max-radius: 5000
+  max-attempts: 15
+  allowed-worlds:
+    - "world"
+    - "world_nether"
+
+messages:
+  prefix: "<gold>[LANetwork]</gold> "
+  no-permission: "<red>You do not have permission to execute this!</red>"
+  rtp-searching: "<yellow>Locating a safe landing zone...</yellow>"
+  rtp-success: "<green>Successfully teleported to coordinates: <gold>%x%, %y%, %z%</gold>!</green>"
+
+gui:
+  title: "§6§lRTP Destination Selection"
+  background-item: "GRAY_STAINED_GLASS_PANE"
+
+  items:
+    overworld_button:
+      material: "GRASS_BLOCK"
+      slot: 11
+      name: "§a§lOverworld Dimension"
+      lore:
+        - "§7Click to execute a random teleport"
+        - "§7within the native overworld surface area."
+      action-type: "WORLD"
+      action-target: "world"
+
+    nether_button:
+      material: "NETHERRACK"
+      slot: 15
+      name: "§c§lNether Wastes"
+      lore:
+        - "§7Click to execute a random teleport"
+        - "§7safely through the nether ceiling."
+      action-type: "WORLD"
+      action-target: "world_nether"
