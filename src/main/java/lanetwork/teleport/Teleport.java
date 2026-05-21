@@ -13,10 +13,12 @@ public final class Teleport extends JavaPlugin {
     public void onEnable() {
 
         this.saveDefaultConfig();
+        validateAndInjectConfigDefaults();
         TpaCommand tpaEngine = new TpaCommand();
         TeleportEngine engine = new TeleportEngine(this);
 
         this.getCommand("tpa").setExecutor(tpaEngine);
+        this.getCommand("tpaauto").setExecutor(engine);
         this.getCommand("tpahere").setExecutor(tpaEngine);
         this.getCommand("tpahereall").setExecutor(tpaEngine);
         this.getCommand("tpaccept").setExecutor(tpaEngine);
@@ -45,11 +47,11 @@ public final class Teleport extends JavaPlugin {
         if (!config.contains("messages.rtp-success")) { config.set("messages.rtp-success", "<green>Successfully teleported to coordinates: <gold>%x%, %y%, %z%</gold>!</green>"); modified = true; }
 
         if (!config.contains("gui.title")) { config.set("gui.title", "§6§lRTP Destination Selection"); modified = true; }
-        if (!config.contains("gui.background-item")) { config.set("gui.background-item", "GRAY_STAINED_GLASS_PANE"); modified = true; }
+        if (!config.contains("gui.background-item")) { config.set("gui.background-item", "minecraft:gray_stained_glass_pane"); modified = true; }
 
         if (!config.contains("gui.items") || config.getConfigurationSection("gui.items") == null || config.getConfigurationSection("gui.items").getKeys(false).isEmpty()) {
             String owPath = "gui.items.overworld_button.";
-            config.set(owPath + "material", "GRASS_BLOCK");
+            config.set(owPath + "material", "minecraft:grass_block");
             config.set(owPath + "slot", 11);
             config.set(owPath + "name", "§a§lOverworld Dimension");
             config.set(owPath + "lore", List.of(
@@ -60,7 +62,7 @@ public final class Teleport extends JavaPlugin {
             config.set(owPath + "action-target", "world");
 
             String netherPath = "gui.items.nether_button.";
-            config.set(netherPath + "material", "NETHERRACK");
+            config.set(netherPath + "material", "minecraft:netherrack");
             config.set(netherPath + "slot", 15);
             config.set(netherPath + "name", "§c§lNether Wastes");
             config.set(netherPath + "lore", List.of(
@@ -77,7 +79,6 @@ public final class Teleport extends JavaPlugin {
             this.saveConfig();
         }
     }
-
     @Override
     public void onDisable() {
         // Plugin shutdown logic

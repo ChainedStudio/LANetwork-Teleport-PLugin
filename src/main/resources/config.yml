@@ -11,6 +11,11 @@ rtp:
     - "world"
     - "world_nether"
 
+sounds:
+  teleport: "ENTITY_ENDERMAN_TELEPORT"
+  send-request: "ENTITY_EXPERIENCE_ORB_PICKUP"
+  receive-request: "BLOCK_NOTE_BLOCK_CHIME"
+
 messages:
   prefix: "<gold>[LANetwork]</gold> "
   no-permission: "<red>You do not have permission to execute this!</red>"
@@ -19,11 +24,11 @@ messages:
 
 gui:
   title: "§6§lRTP Destination Selection"
-  background-item: "GRAY_STAINED_GLASS_PANE"
+  background-item: "minecraft:gray_stained_glass_pane"
 
   items:
     overworld_button:
-      material: "GRASS_BLOCK"
+      material: "minecraft:grass_block"
       slot: 11
       name: "§a§lOverworld Dimension"
       lore:
@@ -33,7 +38,7 @@ gui:
       action-target: "world"
 
     nether_button:
-      material: "NETHERRACK"
+      material: "minecraft:netherrack"
       slot: 15
       name: "§c§lNether Wastes"
       lore:

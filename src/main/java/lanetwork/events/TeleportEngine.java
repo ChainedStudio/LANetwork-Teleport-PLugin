@@ -1,15 +1,20 @@
 package lanetwork.events;
 
+import io.papermc.paper.event.player.AsyncChatEvent;
 import lanetwork.gui.ConfigMenu;
 import lanetwork.gui.RtpMenu;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
+import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Biome;
 import org.bukkit.block.Block;
@@ -22,8 +27,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
-import io.papermc.paper.event.player.AsyncChatEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.metadata.FixedMetadataValue;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -35,8 +40,9 @@ import java.util.concurrent.ThreadLocalRandom;
 public class TeleportEngine implements CommandExecutor, Listener {
 
     private final JavaPlugin plugin;
-    private final HashMap<UUID, TpaRequest> activeRequests = new HashMap<>();
+    private final HashMap<UUID, TpaRequest> activeRequests = new HashMap<>(); // Key: Recipient Target UUID, Value: Request Info
     private final HashSet<UUID> disabledTpa = new HashSet<>();
+    private final HashSet<UUID> autoAcceptTpa = new HashSet<>();
     private final HashMap<UUID, HashSet<UUID>> ignoreLists = new HashMap<>();
 
     private record TpaRequest(UUID senderId, boolean isHereRequest) {}
@@ -81,7 +87,20 @@ public class TeleportEngine implements CommandExecutor, Listener {
                 player.sendMessage(Component.text("TPA requests enabled.", NamedTextColor.GREEN));
             } else {
                 disabledTpa.add(player.getUniqueId());
+                autoAcceptTpa.remove(player.getUniqueId());
                 player.sendMessage(Component.text("TPA requests disabled.", NamedTextColor.RED));
+            }
+            return true;
+        }
+
+        if (cmd.equals("tpaauto")) {
+            if (autoAcceptTpa.contains(player.getUniqueId())) {
+                autoAcceptTpa.remove(player.getUniqueId());
+                player.sendMessage(Component.text("Automatic TPA accept turned OFF.", NamedTextColor.RED));
+            } else {
+                autoAcceptTpa.add(player.getUniqueId());
+                disabledTpa.remove(player.getUniqueId());
+                player.sendMessage(Component.text("Automatic TPA accept turned ON.", NamedTextColor.GREEN));
             }
             return true;
         }
@@ -190,6 +209,14 @@ public class TeleportEngine implements CommandExecutor, Listener {
     }
 
     private boolean sendRequest(Player sender, Player target, boolean isHereRequest) {
+        // Enforce limitation: Loop check ensuring sender has no pending outbound requests anywhere else
+        for (TpaRequest req : activeRequests.values()) {
+            if (req.senderId().equals(sender.getUniqueId())) {
+                sender.sendMessage(Component.text("You already have a pending outbound request active! Please wait until it expires or is answered.", NamedTextColor.RED));
+                return false;
+            }
+        }
+
         if (disabledTpa.contains(target.getUniqueId())) {
             sender.sendMessage(Component.text(target.getName() + " has TPA requests disabled.", NamedTextColor.RED));
             return false;
@@ -200,7 +227,17 @@ public class TeleportEngine implements CommandExecutor, Listener {
         }
 
         activeRequests.put(target.getUniqueId(), new TpaRequest(sender.getUniqueId(), isHereRequest));
+
+        // Auto Accept Logic Profile
+        if (autoAcceptTpa.contains(target.getUniqueId())) {
+            target.sendMessage(Component.text("Automatically accepting teleport request from " + sender.getName() + "...", NamedTextColor.GREEN));
+            sender.sendMessage(Component.text(target.getName() + " auto-accepted your request.", NamedTextColor.GREEN));
+            handleResolve(target, true);
+            return true;
+        }
+
         sender.sendMessage(Component.text("Request sent to " + target.getName() + ".", NamedTextColor.GREEN));
+        playSoundProfile(sender, "sounds.send-request");
 
         String requestString = isHereRequest ? " wants you to teleport to them!\n" : " wants to teleport to you!\n";
         Component message = Component.text()
@@ -216,6 +253,7 @@ public class TeleportEngine implements CommandExecutor, Listener {
                 .build();
 
         target.sendMessage(message);
+        playSoundProfile(target, "sounds.receive-request");
 
         long timeoutTicks = plugin.getConfig().getLong("tpa.timeout", 60L) * 20L;
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
@@ -232,10 +270,7 @@ public class TeleportEngine implements CommandExecutor, Listener {
 
     private void handleResolve(Player target, boolean accept) {
         TpaRequest req = activeRequests.remove(target.getUniqueId());
-        if (req == null) {
-            target.sendMessage(Component.text("You have no pending requests.", NamedTextColor.RED));
-            return;
-        }
+        if (req == null) return;
 
         Player sender = Bukkit.getPlayer(req.senderId());
         if (sender == null || !sender.isOnline()) {
@@ -256,11 +291,23 @@ public class TeleportEngine implements CommandExecutor, Listener {
             if (success) {
                 entityToMove.sendMessage(Component.text("Teleporting...", NamedTextColor.GREEN));
                 destination.sendMessage(Component.text(entityToMove.getName() + " has been teleported to you.", NamedTextColor.GREEN));
+
+                playSoundProfile(entityToMove, "sounds.teleport");
+                playSoundProfile(destination, "sounds.teleport");
             } else {
                 target.sendMessage(Component.text("Teleport sequence failed.", NamedTextColor.RED));
                 sender.sendMessage(Component.text("Teleport sequence failed.", NamedTextColor.RED));
             }
         });
+    }
+
+    private void playSoundProfile(Player player, String configPath) {
+        String sName = plugin.getConfig().getString(configPath, "");
+        if (sName.isEmpty()) return;
+        try {
+            Sound sound = Sound.valueOf(sName.toUpperCase());
+            player.playSound(player.getLocation(), sound, 1.0f, 1.0f);
+        } catch (IllegalArgumentException ignored) {}
     }
 
     @EventHandler
@@ -303,7 +350,6 @@ public class TeleportEngine implements CommandExecutor, Listener {
         }
     }
 
-    // --- NEW TEXT CHAT PROMPT LAYOUT BUTTON ENGINE LISTENER ---
     @EventHandler
     public void onLayoutEditorClick(InventoryClickEvent event) {
         if (!event.getView().getTitle().equals(RtpMenu.EDIT_TITLE)) return;
@@ -320,77 +366,136 @@ public class TeleportEngine implements CommandExecutor, Listener {
             int targetSlot = section.getInt(key + ".slot", -1);
             if (clickedSlot == targetSlot) {
                 player.closeInventory();
+                ClickType click = event.getClick();
 
-                boolean editingWorld = event.getClick().isLeftClick();
-
-                if (editingWorld) {
+                if (click == ClickType.SHIFT_LEFT) {
+                    player.setMetadata("editing_rtp_name", new FixedMetadataValue(plugin, key));
+                    player.sendMessage(Component.text("\n[RTP Editor] Enter the new DISPLAY NAME (supports & format colors) in chat.", NamedTextColor.GREEN));
+                } else if (click == ClickType.SHIFT_RIGHT) {
+                    player.setMetadata("editing_rtp_slot", new FixedMetadataValue(plugin, key));
+                    player.sendMessage(Component.text("\n[RTP Editor] Enter the raw inventory target SLOT integer index (0 to 53) in chat.", NamedTextColor.GOLD));
+                } else if (click == ClickType.MIDDLE || click == ClickType.DROP) {
+                    player.setMetadata("editing_rtp_lore", new FixedMetadataValue(plugin, key));
+                    player.sendMessage(Component.text("\n[RTP Editor] Enter LORE text rows in chat. Split rows using a vertical bar symbol '|'.", NamedTextColor.LIGHT_PURPLE));
+                } else if (click == ClickType.LEFT) {
                     player.setMetadata("editing_rtp_world", new FixedMetadataValue(plugin, key));
                     player.sendMessage(Component.text("\n[RTP Editor] Please type the exact name of the target WORLD in chat to confirm.", NamedTextColor.YELLOW));
-                    player.sendMessage(Component.text("Example: world_nether or srv_world (Type 'cancel' to exit)", NamedTextColor.GRAY));
-                } else {
+                } else if (click == ClickType.RIGHT) {
                     player.setMetadata("editing_rtp_material", new FixedMetadataValue(plugin, key));
-                    player.sendMessage(Component.text("\n[RTP Editor] Please type the official MATERIAL enum identifier in chat to confirm.", NamedTextColor.AQUA));
-                    player.sendMessage(Component.text("Example: DIAMOND_BLOCK or GRASS_BLOCK (Type 'cancel' to exit)", NamedTextColor.GRAY));
+                    player.sendMessage(Component.text("\n[RTP Editor] Please type the namespaced item identifier in chat to confirm.", NamedTextColor.AQUA));
                 }
                 return;
             }
         }
     }
 
-    // --- ASYNC CHAT INTERCEPTOR FOR GUI CHANGES ---
     @EventHandler(priority = EventPriority.LOWEST)
     public void onPlayerChatPrompt(AsyncChatEvent event) {
         Player player = event.getPlayer();
-        boolean clearWorld = player.hasMetadata("editing_rtp_world");
-        boolean clearMat = player.hasMetadata("editing_rtp_material");
 
-        if (!clearWorld && !clearMat) return;
+        String matchedKey = null;
+        String fieldType = null;
 
-        event.setCancelled(true); // Stop message from leaking into public game channels
+        String[] metadataFields = {
+                "editing_rtp_world", "editing_rtp_material", "editing_rtp_name",
+                "editing_rtp_slot", "editing_rtp_lore", "editing_sound_path"
+        };
+        for (String field : metadataFields) {
+            if (player.hasMetadata(field)) {
+                matchedKey = player.getMetadata(field).get(0).asString();
+                fieldType = field;
+                player.removeMetadata(field, plugin);
+                break;
+            }
+        }
+
+        if (fieldType == null) return;
+        event.setCancelled(true);
 
         String input = MiniMessage.miniMessage().serialize(event.message()).trim();
 
         if (input.equalsIgnoreCase("cancel")) {
-            player.removeMetadata("editing_rtp_world", plugin);
-            player.removeMetadata("editing_rtp_material", plugin);
             player.sendMessage(Component.text("Configuration sequence cancelled.", NamedTextColor.RED));
-            Bukkit.getScheduler().runTask(plugin, () -> new RtpMenu(plugin).openEditorMenu(player));
+            if (fieldType.equals("editing_sound_path")) {
+                Bukkit.getScheduler().runTask(plugin, () -> new ConfigMenu(plugin).openSoundsMenu(player));
+            } else {
+                Bukkit.getScheduler().runTask(plugin, () -> new RtpMenu(plugin).openEditorMenu(player));
+            }
             return;
         }
 
         FileConfiguration config = plugin.getConfig();
 
-        if (clearWorld) {
-            String buttonKey = player.getMetadata("editing_rtp_world").get(0).asString();
-            player.removeMetadata("editing_rtp_world", plugin);
-
-            config.set("gui.items." + buttonKey + ".action-target", input);
-            config.set("gui.items." + buttonKey + ".action-type", "WORLD");
-            plugin.saveConfig();
-
-            player.sendMessage(Component.text("Successfully bound target world for '" + buttonKey + "' to: " + input, NamedTextColor.GREEN));
-        } else {
-            String buttonKey = player.getMetadata("editing_rtp_material").get(0).asString();
-            player.removeMetadata("editing_rtp_material", plugin);
-
-            Material mat = Material.matchMaterial(input.toUpperCase());
-            if (mat == null) {
-                player.sendMessage(Component.text("Error: '" + input + "' is not a valid Minecraft material enum key. Task aborted.", NamedTextColor.RED));
-            } else {
-                config.set("gui.items." + buttonKey + ".material", mat.name());
+        switch (fieldType) {
+            case "editing_sound_path" -> {
+                try {
+                    Sound parsedSound = Sound.valueOf(input.toUpperCase());
+                    config.set(matchedKey, parsedSound.name());
+                    plugin.saveConfig();
+                    player.sendMessage(Component.text("Sound profile key updated perfectly to: " + parsedSound.name(), NamedTextColor.GREEN));
+                } catch (IllegalArgumentException e) {
+                    player.sendMessage(Component.text("Error: '" + input + "' matches no native Bukkit sounds enum. Aborted.", NamedTextColor.RED));
+                }
+                Bukkit.getScheduler().runTask(plugin, () -> new ConfigMenu(plugin).openSoundsMenu(player));
+                return;
+            }
+            case "editing_rtp_world" -> {
+                config.set("gui.items." + matchedKey + ".action-target", input);
                 plugin.saveConfig();
-                player.sendMessage(Component.text("Successfully updated material icon for '" + buttonKey + "' to: " + mat.name(), NamedTextColor.GREEN));
+                player.sendMessage(Component.text("Successfully bound target world to: " + input, NamedTextColor.GREEN));
+            }
+            case "editing_rtp_material" -> {
+                String formatInput = input.contains(":") ? input.toLowerCase() : "minecraft:" + input.toLowerCase();
+                NamespacedKey namespacedKey = NamespacedKey.fromString(formatInput);
+                Material mat = (namespacedKey != null) ? Registry.MATERIAL.get(namespacedKey) : null;
+                if (mat == null || mat.isAir()) {
+                    player.sendMessage(Component.text("Error: '" + input + "' is not a valid Minecraft item. Aborted.", NamedTextColor.RED));
+                } else {
+                    config.set("gui.items." + matchedKey + ".material", formatInput);
+                    plugin.saveConfig();
+                    player.sendMessage(Component.text("Updated material identifier to: " + formatInput, NamedTextColor.GREEN));
+                }
+            }
+            case "editing_rtp_name" -> {
+                String formattedName = input.replace("&", "§");
+                config.set("gui.items." + matchedKey + ".name", formattedName);
+                plugin.saveConfig();
+                player.sendMessage(Component.text("Updated title name to: " + formattedName, NamedTextColor.GREEN));
+            }
+            case "editing_rtp_slot" -> {
+                try {
+                    int slotIndex = Integer.parseInt(input);
+                    if (slotIndex < 0 || slotIndex > 53) {
+                        player.sendMessage(Component.text("Slot bounds must be between 0 and 53. Aborted.", NamedTextColor.RED));
+                    } else {
+                        config.set("gui.items." + matchedKey + ".slot", slotIndex);
+                        plugin.saveConfig();
+                        player.sendMessage(Component.text("Successfully reassigned slot layout index to: " + slotIndex, NamedTextColor.GREEN));
+                    }
+                } catch (NumberFormatException e) {
+                    player.sendMessage(Component.text("Invalid integer format template. Aborted.", NamedTextColor.RED));
+                }
+            }
+            case "editing_rtp_lore" -> {
+                String[] items = input.split("\\|");
+                List<String> textRows = new ArrayList<>();
+                for (String line : items) {
+                    textRows.add(line.trim().replace("&", "§"));
+                }
+                config.set("gui.items." + matchedKey + ".lore", textRows);
+                plugin.saveConfig();
+                player.sendMessage(Component.text("Successfully updated custom layout lore rows.", NamedTextColor.GREEN));
             }
         }
 
-        // Return player cleanly right back into the visual Menu frame inside the main server thread safely
         Bukkit.getScheduler().runTask(plugin, () -> new RtpMenu(plugin).openEditorMenu(player));
     }
 
     @EventHandler
     public void onAdminConfigClick(InventoryClickEvent event) {
         String title = event.getView().getTitle();
-        if (!title.equals(ConfigMenu.MAIN_TITLE) && !title.equals(ConfigMenu.TPA_TITLE) && !title.equals(ConfigMenu.RTP_TITLE)) return;
+        if (!title.equals(ConfigMenu.MAIN_TITLE) && !title.equals(ConfigMenu.TPA_TITLE) &&
+                !title.equals(ConfigMenu.RTP_TITLE) && !title.equals(ConfigMenu.SOUNDS_TITLE)) return;
 
         event.setCancelled(true);
         if (!(event.getWhoClicked() instanceof Player player)) return;
@@ -405,6 +510,7 @@ public class TeleportEngine implements CommandExecutor, Listener {
         if (title.equals(ConfigMenu.MAIN_TITLE)) {
             if (clicked.getType() == Material.CLOCK) menu.openTpaMenu(player);
             else if (clicked.getType() == Material.COMPASS) menu.openRtpMenu(player);
+            else if (clicked.getType() == Material.JUKEBOX) menu.openSoundsMenu(player);
             return;
         }
 
@@ -422,6 +528,45 @@ public class TeleportEngine implements CommandExecutor, Listener {
             }
             plugin.saveConfig();
             menu.openTpaMenu(player);
+            return;
+        }
+
+        if (title.equals(ConfigMenu.SOUNDS_TITLE)) {
+            player.closeInventory();
+
+            // NEW FEATURE: Wiki Link Handling
+            if (clicked.getType() == Material.WRITABLE_BOOK) {
+                player.closeInventory(); // Smoothly close the menu view for them
+
+                player.sendMessage(Component.text("\n=============================================", NamedTextColor.GRAY));
+                player.sendMessage(Component.text("Click the link below to open the official Bukkit Javadocs list:", NamedTextColor.GOLD));
+
+                // Cleanly create the underlined link via MiniMessage parser
+                Component wikiLink = MiniMessage.miniMessage().deserialize("<green><underlined><bold>🔗 CLICK HERE TO OPEN BUKKIT SOUNDS LIST 🔗</bold></underlined></green>")
+                        .clickEvent(ClickEvent.openUrl("https://hub.spigotmc.org/javadocs/spigot/org/bukkit/Sound.html"))
+                        .hoverEvent(HoverEvent.showText(Component.text("Click to open spigotmc.org documentation in your browser!", NamedTextColor.AQUA)));
+
+                player.sendMessage(wikiLink);
+                player.sendMessage(Component.text("=============================================", NamedTextColor.GRAY));
+                return;
+            }
+
+            switch (clicked.getType()) {
+                case CHORUS_FRUIT -> {
+                    player.setMetadata("editing_sound_path", new FixedMetadataValue(plugin, "sounds.teleport"));
+                    player.sendMessage(Component.text("\n[Sound Profile Editor] Enter raw bukkit SOUND ENUM name for TELEPORTATION:", NamedTextColor.GOLD));
+                }
+                case GOLD_NUGGET -> {
+                    player.setMetadata("editing_sound_path", new FixedMetadataValue(plugin, "sounds.send-request"));
+                    player.sendMessage(Component.text("\n[Sound Profile Editor] Enter raw bukkit SOUND ENUM name for SENDING REQUESTS:", NamedTextColor.GOLD));
+                }
+                case BELL -> {
+                    player.setMetadata("editing_sound_path", new FixedMetadataValue(plugin, "sounds.receive-request"));
+                    player.sendMessage(Component.text("\n[Sound Profile Editor] Enter raw bukkit SOUND ENUM name for RECEIVING REQUESTS:", NamedTextColor.GOLD));
+                }
+                default -> { return; }
+            }
+            player.sendMessage(Component.text("Example: ENTITY_ENDERMAN_TELEPORT or BLOCK_NOTE_BLOCK_PLING (Type 'cancel' to exit)", NamedTextColor.GRAY));
             return;
         }
 
@@ -513,6 +658,7 @@ public class TeleportEngine implements CommandExecutor, Listener {
                                 .replace("%y%", String.valueOf(finalLoc.getBlockY()))
                                 .replace("%z%", String.valueOf(finalLoc.getBlockZ()));
                         player.sendMessage(mm.deserialize(prefix + successMsg));
+                        playSoundProfile(player, "sounds.teleport");
                     });
                 } else {
                     player.sendMessage(Component.text("Could not secure safe zone boundaries. Try again.", NamedTextColor.RED));

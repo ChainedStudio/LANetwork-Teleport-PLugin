@@ -9,6 +9,9 @@ commands:
   tpa:
     description: Ask to teleport to a player.
     usage: /tpa <player>
+  tpaauto:
+    description: Toggle automatic acceptance of incoming TPA requests.
+    usage: /tpaauto
   tpahere:
     description: Ask a player to teleport to you.
     usage: /tpahere <player>
