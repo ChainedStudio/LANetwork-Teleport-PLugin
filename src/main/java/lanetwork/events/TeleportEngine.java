@@ -3,11 +3,11 @@ package lanetwork.events;
 import io.papermc.paper.event.player.AsyncChatEvent;
 import lanetwork.gui.ConfigMenu;
 import lanetwork.gui.RtpMenu;
+import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -21,6 +21,7 @@ import org.bukkit.block.Block;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
@@ -33,14 +34,16 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.metadata.FixedMetadataValue;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.Collectors;
 
-public class TeleportEngine implements CommandExecutor, Listener {
+public class TeleportEngine implements CommandExecutor, TabCompleter, Listener {
 
     private final JavaPlugin plugin;
-    private final HashMap<UUID, TpaRequest> activeRequests = new HashMap<>(); // Key: Recipient Target UUID, Value: Request Info
+    private final HashMap<UUID, TpaRequest> activeRequests = new HashMap<>(); // Key: Target Recipient, Value: Request
     private final HashSet<UUID> disabledTpa = new HashSet<>();
     private final HashSet<UUID> autoAcceptTpa = new HashSet<>();
     private final HashMap<UUID, HashSet<UUID>> ignoreLists = new HashMap<>();
@@ -78,6 +81,32 @@ public class TeleportEngine implements CommandExecutor, Listener {
                 return true;
             }
             player.sendMessage(Component.text("Usage: /teleportconfig [reload]", NamedTextColor.YELLOW));
+            return true;
+        }
+
+        if (cmd.equals("teleportsoundselect")) {
+            if (!player.hasPermission("lanetwork.admin")) {
+                player.sendMessage(Component.text("You lack administrative permissions.", NamedTextColor.RED));
+                return true;
+            }
+            if (!player.hasMetadata("editing_sound_path")) {
+                player.sendMessage(Component.text("No active sound editing session found. Use /teleportconfig.", NamedTextColor.RED));
+                return true;
+            }
+            if (args.length == 0) {
+                player.sendMessage(Component.text("Usage: /teleportsoundselect <SOUND>", NamedTextColor.RED));
+                return true;
+            }
+
+            String path = player.getMetadata("editing_sound_path").get(0).asString();
+            player.removeMetadata("editing_sound_path", plugin);
+
+            String soundInput = args[0].toUpperCase();
+            config.set(path, soundInput);
+            plugin.saveConfig();
+
+            player.sendMessage(Component.text("Sound setting applied successfully: " + soundInput, NamedTextColor.GREEN));
+            new ConfigMenu(plugin).openSoundsMenu(player);
             return true;
         }
 
@@ -209,14 +238,16 @@ public class TeleportEngine implements CommandExecutor, Listener {
     }
 
     private boolean sendRequest(Player sender, Player target, boolean isHereRequest) {
-        // Enforce limitation: Loop check ensuring sender has no pending outbound requests anywhere else
+        // 1. STRICT OUTBOUND LIMITATION WALL
+        // Checked first so that spam/loops fail instantly before running target analytics.
         for (TpaRequest req : activeRequests.values()) {
             if (req.senderId().equals(sender.getUniqueId())) {
-                sender.sendMessage(Component.text("You already have a pending outbound request active! Please wait until it expires or is answered.", NamedTextColor.RED));
+                sender.sendMessage(Component.text("You already have a pending outbound request active! Please wait until it expires.", NamedTextColor.RED));
                 return false;
             }
         }
 
+        // 2. Profile Availability Checks
         if (disabledTpa.contains(target.getUniqueId())) {
             sender.sendMessage(Component.text(target.getName() + " has TPA requests disabled.", NamedTextColor.RED));
             return false;
@@ -226,15 +257,27 @@ public class TeleportEngine implements CommandExecutor, Listener {
             return false;
         }
 
-        activeRequests.put(target.getUniqueId(), new TpaRequest(sender.getUniqueId(), isHereRequest));
-
-        // Auto Accept Logic Profile
+        // 3. Independent Auto Accept Execution Block
         if (autoAcceptTpa.contains(target.getUniqueId())) {
             target.sendMessage(Component.text("Automatically accepting teleport request from " + sender.getName() + "...", NamedTextColor.GREEN));
             sender.sendMessage(Component.text(target.getName() + " auto-accepted your request.", NamedTextColor.GREEN));
-            handleResolve(target, true);
+
+            Player entityToMove = isHereRequest ? target : sender;
+            Player destination = isHereRequest ? sender : target;
+
+            entityToMove.teleportAsync(destination.getLocation()).thenAccept(success -> {
+                if (success) {
+                    entityToMove.sendMessage(Component.text("Teleporting...", NamedTextColor.GREEN));
+                    destination.sendMessage(Component.text(entityToMove.getName() + " has been teleported to you.", NamedTextColor.GREEN));
+                    playSoundProfile(entityToMove, "sounds.teleport");
+                    playSoundProfile(destination, "sounds.teleport");
+                }
+            });
             return true;
         }
+
+        // 4. Standard Request Slot Pipeline
+        activeRequests.put(target.getUniqueId(), new TpaRequest(sender.getUniqueId(), isHereRequest));
 
         sender.sendMessage(Component.text("Request sent to " + target.getName() + ".", NamedTextColor.GREEN));
         playSoundProfile(sender, "sounds.send-request");
@@ -302,12 +345,27 @@ public class TeleportEngine implements CommandExecutor, Listener {
     }
 
     private void playSoundProfile(Player player, String configPath) {
-        String sName = plugin.getConfig().getString(configPath, "");
-        if (sName.isEmpty()) return;
+        String rawSound = plugin.getConfig().getString(configPath, "").trim().toLowerCase();
+        if (rawSound.isEmpty()) return;
+
+        // Automatically fix custom formatting/paths if stored in old formats
+        if (!rawSound.contains(".") && !rawSound.contains(":")) {
+            rawSound = "minecraft:" + rawSound.replace("_", ".");
+        }
+        if (!rawSound.contains(":")) {
+            rawSound = "minecraft:" + rawSound;
+        }
+
         try {
-            Sound sound = Sound.valueOf(sName.toUpperCase());
-            player.playSound(player.getLocation(), sound, 1.0f, 1.0f);
-        } catch (IllegalArgumentException ignored) {}
+            Key soundKey = Key.key(rawSound);
+            net.kyori.adventure.sound.Sound advSound = net.kyori.adventure.sound.Sound.sound(
+                    soundKey,
+                    net.kyori.adventure.sound.Sound.Source.MASTER,
+                    1.0f,
+                    1.0f
+            );
+            player.playSound(advSound);
+        } catch (Exception ignored) {}
     }
 
     @EventHandler
@@ -428,14 +486,10 @@ public class TeleportEngine implements CommandExecutor, Listener {
 
         switch (fieldType) {
             case "editing_sound_path" -> {
-                try {
-                    Sound parsedSound = Sound.valueOf(input.toUpperCase());
-                    config.set(matchedKey, parsedSound.name());
-                    plugin.saveConfig();
-                    player.sendMessage(Component.text("Sound profile key updated perfectly to: " + parsedSound.name(), NamedTextColor.GREEN));
-                } catch (IllegalArgumentException e) {
-                    player.sendMessage(Component.text("Error: '" + input + "' matches no native Bukkit sounds enum. Aborted.", NamedTextColor.RED));
-                }
+                String soundInput = input.toUpperCase().replace("§", "");
+                config.set(matchedKey, soundInput);
+                plugin.saveConfig();
+                player.sendMessage(Component.text("Sound setting updated perfectly to: " + soundInput, NamedTextColor.GREEN));
                 Bukkit.getScheduler().runTask(plugin, () -> new ConfigMenu(plugin).openSoundsMenu(player));
                 return;
             }
@@ -534,14 +588,10 @@ public class TeleportEngine implements CommandExecutor, Listener {
         if (title.equals(ConfigMenu.SOUNDS_TITLE)) {
             player.closeInventory();
 
-            // NEW FEATURE: Wiki Link Handling
             if (clicked.getType() == Material.WRITABLE_BOOK) {
-                player.closeInventory(); // Smoothly close the menu view for them
-
                 player.sendMessage(Component.text("\n=============================================", NamedTextColor.GRAY));
                 player.sendMessage(Component.text("Click the link below to open the official Bukkit Javadocs list:", NamedTextColor.GOLD));
 
-                // Cleanly create the underlined link via MiniMessage parser
                 Component wikiLink = MiniMessage.miniMessage().deserialize("<green><underlined><bold>🔗 CLICK HERE TO OPEN BUKKIT SOUNDS LIST 🔗</bold></underlined></green>")
                         .clickEvent(ClickEvent.openUrl("https://hub.spigotmc.org/javadocs/spigot/org/bukkit/Sound.html"))
                         .hoverEvent(HoverEvent.showText(Component.text("Click to open spigotmc.org documentation in your browser!", NamedTextColor.AQUA)));
@@ -554,19 +604,19 @@ public class TeleportEngine implements CommandExecutor, Listener {
             switch (clicked.getType()) {
                 case CHORUS_FRUIT -> {
                     player.setMetadata("editing_sound_path", new FixedMetadataValue(plugin, "sounds.teleport"));
-                    player.sendMessage(Component.text("\n[Sound Profile Editor] Enter raw bukkit SOUND ENUM name for TELEPORTATION:", NamedTextColor.GOLD));
+                    player.sendMessage(Component.text("\n[Sound Profile Editor] Enter command sound profile name for TELEPORTATION:", NamedTextColor.GOLD));
                 }
                 case GOLD_NUGGET -> {
                     player.setMetadata("editing_sound_path", new FixedMetadataValue(plugin, "sounds.send-request"));
-                    player.sendMessage(Component.text("\n[Sound Profile Editor] Enter raw bukkit SOUND ENUM name for SENDING REQUESTS:", NamedTextColor.GOLD));
+                    player.sendMessage(Component.text("\n[Sound Profile Editor] Enter command sound profile name for SENDING REQUESTS:", NamedTextColor.GOLD));
                 }
                 case BELL -> {
                     player.setMetadata("editing_sound_path", new FixedMetadataValue(plugin, "sounds.receive-request"));
-                    player.sendMessage(Component.text("\n[Sound Profile Editor] Enter raw bukkit SOUND ENUM name for RECEIVING REQUESTS:", NamedTextColor.GOLD));
+                    player.sendMessage(Component.text("\n[Sound Profile Editor] Enter command sound profile name for RECEIVING REQUESTS:", NamedTextColor.GOLD));
                 }
                 default -> { return; }
             }
-            player.sendMessage(Component.text("Example: ENTITY_ENDERMAN_TELEPORT or BLOCK_NOTE_BLOCK_PLING (Type 'cancel' to exit)", NamedTextColor.GRAY));
+            player.sendMessage(Component.text("Supports standard names (e.g. ENTITY_ENDERMAN_TELEPORT) or namespace paths.", NamedTextColor.GRAY));
             return;
         }
 
@@ -601,6 +651,20 @@ public class TeleportEngine implements CommandExecutor, Listener {
             plugin.saveConfig();
             menu.openRtpMenu(player);
         }
+    }
+
+    @Override
+    public @Nullable List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String alias, @NotNull String[] args) {
+        if (command.getName().equalsIgnoreCase("teleportsoundselect") && args.length == 1) {
+            String typed = args[0].toUpperCase();
+            return Arrays.stream(Sound.values())
+                    .map(Sound::name) // Fixed conversion mapper context hierarchy
+                    .filter(name -> name.startsWith(typed)) // Explicitly parsed string bounds sequence
+                    .sorted()
+                    .limit(40)
+                    .collect(Collectors.toList());
+        }
+        return Collections.emptyList();
     }
 
     private void executeRandomTeleport(Player player, World world, Biome preferredBiome, int maxRadius) {
