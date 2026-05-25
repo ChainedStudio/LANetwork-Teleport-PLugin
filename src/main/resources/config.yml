@@ -12,9 +12,10 @@ rtp:
     - "world_nether"
 
 sounds:
-  teleport: "ENTITY_ENDERMAN_TELEPORT"
   send-request: "ENTITY_EXPERIENCE_ORB_PICKUP"
   receive-request: "BLOCK_NOTE_BLOCK_CHIME"
+  teleport: "ENTITY_ENDERMAN_TELEPORT"
+  deny: "BLOCK_ANVIL_LAND"
 
 messages:
   prefix: "<gold>[LANetwork]</gold> "
