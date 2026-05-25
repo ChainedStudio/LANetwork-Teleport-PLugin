@@ -1,0 +1,41 @@
+# LANetwork Teleportation Subsystem Messages Layout
+prefix: "<gold>[LANetwork]</gold> "
+no-permission: "<red>You do not have permission to execute this administrative module.</red>"
+
+tpa:
+  # Sent to sender when trying to spam requests
+  spam-guard: "<red>You already have a pending outbound request active! Please wait or allow it to expire.</red>"
+  sent-confirmation: "<green>Teleport request successfully delivered to <gold>%target%</gold>.</green>"
+  disabled-target: "<red>%target% has disabled incoming teleportation request routes.</red>"
+  cannot-request-self: "<red>You cannot send a teleport request to yourself.</red>"
+  player-not-found: "<red>Specified player could not be located online.</red>"
+
+  # The text block header sent to the receiver
+  incoming-request-to: "\n<gray>---------------------------------------------</gray>\n<gold>%sender%</gold> <yellow>wants to teleport to your location.</yellow>"
+  incoming-request-here: "\n<gray>---------------------------------------------</gray>\n<gold>%sender%</gold> <yellow>requested that you teleport to them.</yellow>"
+
+  # Clickable button presentation elements
+  button-accept: "<green><bold>[ACCEPT]</bold></green>"
+  button-accept-hover: "<gray>Click to authorize warm-up protocols</gray>"
+  button-deny: "<red><bold>[DENY]</bold></red>"
+  button-deny-hover: "<gray>Click to reject request rules</gray>"
+  request-footer: "\n<gray>---------------------------------------------</gray>"
+
+  # Acceptance and Denial text feedbacks
+  sender-accepted: "<green>%target% accepted your request. Preparing teleportation warp...</green>"
+  receiver-accepted: "<green>Request accepted. Preparing warm-up protocols...</green>"
+  sender-denied: "<red>%target% denied your teleport request.</red>"
+  receiver-denied: "<yellow>Request dropped and denied successfully.</yellow>"
+  request-expired-sender: "<red>Your teleport request to %target% has expired.</red>"
+  request-expired-receiver: "<gray>Teleport request from %sender% has expired.</gray>"
+
+  # Countdown Title & Action Screen mechanics
+  countdown-title: "<red><bold>%seconds%...</bold></red>"
+  countdown-subtitle: "<gray>Do not move!</gray>"
+  countdown-cancelled: "<red>Teleportation cancelled because you broke stillness rules!</red>"
+  countdown-traveller-moved: "<red>Teleport cancelled: The moving player broke stillness rules.</red>"
+  warped-title: "<green><bold>WARPED!</bold></green>"
+
+debug:
+  toggle-on: "<light_purple>Debug override framework enabled.</light_purple>"
+  toggle-off: "<gray>Debug override framework disabled.</gray>"

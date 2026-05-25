@@ -34,8 +34,6 @@ public class TpaCommand implements CommandExecutor {
     private final HashSet<UUID> disabledTpa = new HashSet<>();
     private final HashSet<UUID> autoAcceptTpa = new HashSet<>();
     private final HashMap<UUID, HashSet<UUID>> ignoreLists = new HashMap<>();
-
-    // Active task map to handle movement cancel drops
     private final HashMap<UUID, BukkitTask> activeCountdowns = new HashMap<>();
 
     private boolean debugMode = false;
@@ -44,6 +42,44 @@ public class TpaCommand implements CommandExecutor {
 
     public TpaCommand(Teleport plugin) {
         this.plugin = plugin;
+    }
+
+    private Component getMessage(String path) {
+        String msg = plugin.getMessagesConfig().getString(path, "");
+        return parseColorString(msg);
+    }
+
+    private Component getMessage(String path, String placeholder, String replacement) {
+        String msg = plugin.getMessagesConfig().getString(path, "");
+        msg = msg.replace(placeholder, replacement);
+        return parseColorString(msg);
+    }
+
+    private Component parseColorString(String input) {
+        if (input == null) return Component.text("");
+
+        // Convert hex format (&#FFFFFF) to standard MiniMessage syntax (<#FFFFFF>)
+        java.util.regex.Pattern hexPattern = java.util.regex.Pattern.compile("&#([A-Fa-f0-9]{6})");
+        java.util.regex.Matcher matcher = hexPattern.matcher(input);
+        StringBuffer sb = new StringBuffer();
+        while (matcher.find()) {
+            matcher.appendReplacement(sb, "<#" + matcher.group(1) + ">");
+        }
+        matcher.appendTail(sb);
+        String processed = sb.toString();
+
+        // Compatibility fallback layer mapping legacy configurations natively
+        processed = processed
+                .replace("&0", "<black>").replace("&1", "<dark_blue>").replace("&2", "<dark_green>")
+                .replace("&3", "<dark_aqua>").replace("&4", "<dark_red>").replace("&5", "<dark_purple>")
+                .replace("&6", "<gold>").replace("&7", "<gray>").replace("&8", "<dark_gray>")
+                .replace("&9", "<blue>").replace("&a", "<green>").replace("&b", "<aqua>")
+                .replace("&c", "<red>").replace("&d", "<light_purple>").replace("&e", "<yellow>")
+                .replace("&f", "<white>").replace("&l", "<bold>").replace("&m", "<strikethrough>")
+                .replace("&n", "<underlined>").replace("&o", "<italic>").replace("&r", "<reset>")
+                .replace("§", "&");
+
+        return net.kyori.adventure.text.minimessage.MiniMessage.miniMessage().deserialize(processed);
     }
 
     @Override
@@ -56,8 +92,9 @@ public class TpaCommand implements CommandExecutor {
         String cmd = command.getName().toLowerCase();
 
         switch (cmd) {
-            case "tpa" -> { return handleTpaRequest(player, args, false); }
-            case "tpahere" -> { return handleTpaRequest(player, args, true); }
+            case "tpa" -> { return handleTpaRequest(player, args, false, false); }
+            case "tpahere" -> { return handleTpaRequest(player, args, true, false); }
+            case "tpahereall" -> { return handleTpaHereAll(player); }
             case "tpaccept" -> { handleAcceptDeny(player, true); return true; }
             case "tpadeny" -> { handleAcceptDeny(player, false); return true; }
             case "tpatoggle" -> {
@@ -113,18 +150,54 @@ public class TpaCommand implements CommandExecutor {
             }
             case "debug" -> {
                 if (!player.hasPermission("lanetwork.admin")) {
-                    player.sendMessage(Component.text("No permission.", NamedTextColor.RED));
+                    player.sendMessage(getMessage("no-permission"));
                     return true;
                 }
                 debugMode = !debugMode;
-                player.sendMessage(Component.text("Debug override flag: " + debugMode, NamedTextColor.LIGHT_PURPLE));
+                player.sendMessage(getMessage(debugMode ? "debug.toggle-on" : "debug.toggle-off"));
                 return true;
             }
         }
         return true;
     }
 
-    private boolean handleTpaRequest(Player sender, String[] args, boolean isHereRequest) {
+    private boolean handleTpaHereAll(Player sender) {
+        if (!sender.hasPermission("lanetwork.tpahereall")) {
+            sender.sendMessage(getMessage("no-permission"));
+            return true;
+        }
+
+        if (outboundTrackers.contains(sender.getUniqueId())) {
+            sender.sendMessage(getMessage("tpa.spam-guard"));
+            return true;
+        }
+
+        int targetCount = 0;
+
+        for (Player target : Bukkit.getOnlinePlayers()) {
+            if (target.getUniqueId().equals(sender.getUniqueId())) continue;
+            if (!sender.canSee(target) && !debugMode) continue;
+            if (disabledTpa.contains(target.getUniqueId()) && !debugMode) continue;
+
+            HashSet<UUID> targetIgnoreList = ignoreLists.get(target.getUniqueId());
+            if (targetIgnoreList != null && targetIgnoreList.contains(sender.getUniqueId()) && !debugMode) continue;
+
+            String[] targetArgs = new String[]{target.getName()};
+            handleTpaRequest(sender, targetArgs, true, true);
+            targetCount++;
+        }
+
+        if (targetCount > 0) {
+            outboundTrackers.add(sender.getUniqueId());
+            sender.sendMessage(Component.text("Sent a mass tpahere request to all " + targetCount + " online players!", NamedTextColor.GREEN));
+        } else {
+            sender.sendMessage(Component.text("No valid active players found to receive your request.", NamedTextColor.RED));
+        }
+
+        return true;
+    }
+
+    private boolean handleTpaRequest(Player sender, String[] args, boolean isHereRequest, boolean bypassBlocker) {
         if (args.length == 0) {
             sender.sendMessage(Component.text("Usage: /" + (isHereRequest ? "tpahere" : "tpa") + " <player>", NamedTextColor.RED));
             return true;
@@ -132,66 +205,56 @@ public class TpaCommand implements CommandExecutor {
 
         Player target = Bukkit.getPlayer(args[0]);
         if (target == null || (!sender.canSee(target) && !debugMode)) {
-            sender.sendMessage(Component.text("Player not found online.", NamedTextColor.RED));
+            if (!bypassBlocker) sender.sendMessage(getMessage("tpa.player-not-found"));
             return true;
         }
 
         if (sender.getUniqueId().equals(target.getUniqueId()) && !debugMode) {
-            sender.sendMessage(Component.text("You cannot send a teleport request to yourself.", NamedTextColor.RED));
+            if (!bypassBlocker) sender.sendMessage(getMessage("tpa.cannot-request-self"));
             return true;
         }
 
-        // SPAM GUARD: Prevent player from sending multiple ongoing active requests
-        if (outboundTrackers.contains(sender.getUniqueId())) {
-            sender.sendMessage(Component.text("You already have an active outbound request pending! Please wait until it finishes or expires.", NamedTextColor.RED));
+        if (!bypassBlocker && outboundTrackers.contains(sender.getUniqueId())) {
+            sender.sendMessage(getMessage("tpa.spam-guard"));
             return true;
         }
 
         if (disabledTpa.contains(target.getUniqueId()) && !debugMode) {
-            sender.sendMessage(Component.text(target.getName() + " has disabled incoming teleport requests.", NamedTextColor.RED));
+            if (!bypassBlocker) sender.sendMessage(getMessage("tpa.disabled-target", "%target%", target.getName()));
             return true;
         }
 
-        HashSet<UUID> targetIgnoreList = ignoreLists.get(target.getUniqueId());
-        if (targetIgnoreList != null && targetIgnoreList.contains(sender.getUniqueId()) && !debugMode) {
-            sender.sendMessage(Component.text("You cannot send requests to this player right now.", NamedTextColor.RED));
-            return true;
-        }
-
-        // Lock global outbound tracker index maps
         activeRequests.put(target.getUniqueId(), new TpaRequest(sender.getUniqueId(), isHereRequest));
-        outboundTrackers.add(sender.getUniqueId());
+
+        if (!bypassBlocker) {
+            outboundTrackers.add(sender.getUniqueId());
+            sender.sendMessage(getMessage("tpa.sent-confirmation", "%target%", target.getName()));
+        }
 
         plugin.getSoundEngine().playSoundProfile(sender, "sounds.send-request");
 
         if (autoAcceptTpa.contains(target.getUniqueId())) {
-            sender.sendMessage(Component.text(target.getName() + " auto-accepted your request!", NamedTextColor.GREEN));
             handleAcceptDeny(target, true);
             return true;
         }
 
-        target.sendMessage(Component.text("\n---------------------------------------------", NamedTextColor.GRAY));
-        if (isHereRequest) {
-            target.sendMessage(Component.text(sender.getName(), NamedTextColor.GOLD)
-                    .append(Component.text(" requested that you teleport to them.", NamedTextColor.YELLOW)));
-        } else {
-            target.sendMessage(Component.text(sender.getName(), NamedTextColor.GOLD)
-                    .append(Component.text(" wants to teleport to your location.", NamedTextColor.YELLOW)));
-        }
+        Component baseHeader = isHereRequest ?
+                getMessage("tpa.incoming-request-here", "%sender%", sender.getName()) :
+                getMessage("tpa.incoming-request-to", "%sender%", sender.getName());
 
-        Component choiceButtons = Component.text("[ACCEPT] ", NamedTextColor.GREEN)
-                .hoverEvent(HoverEvent.showText(Component.text("Click to accept request rules")))
-                .clickEvent(ClickEvent.runCommand("/tpaccept"))
-                .append(Component.text("   "))
-                .append(Component.text("[DENY]", NamedTextColor.RED)
-                        .hoverEvent(HoverEvent.showText(Component.text("Click to reject request rules")))
-                        .clickEvent(ClickEvent.runCommand("/tpadeny")));
+        Component acceptBtn = getMessage("tpa.button-accept")
+                .hoverEvent(HoverEvent.showText(getMessage("tpa.button-accept-hover")))
+                .clickEvent(ClickEvent.runCommand("/tpaccept"));
 
-        target.sendMessage(choiceButtons);
-        target.sendMessage(Component.text("---------------------------------------------\n", NamedTextColor.GRAY));
+        Component denyBtn = getMessage("tpa.button-deny")
+                .hoverEvent(HoverEvent.showText(getMessage("tpa.button-deny-hover")))
+                .clickEvent(ClickEvent.runCommand("/tpadeny"));
+
+        target.sendMessage(baseHeader);
+        target.sendMessage(Component.text("   ").append(acceptBtn).append(Component.text("   ")).append(denyBtn));
+        target.sendMessage(getMessage("tpa.request-footer"));
+
         plugin.getSoundEngine().playSoundProfile(target, "sounds.receive-request");
-
-        sender.sendMessage(Component.text("Teleport request successfully delivered to " + target.getName() + ".", NamedTextColor.GREEN));
 
         int expiryDuration = plugin.getConfig().getInt("tpa.timeout", 60);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
@@ -199,8 +262,8 @@ public class TpaCommand implements CommandExecutor {
             if (currentReq != null && currentReq.senderId().equals(sender.getUniqueId())) {
                 activeRequests.remove(target.getUniqueId());
                 outboundTrackers.remove(sender.getUniqueId());
-                sender.sendMessage(Component.text("Your teleport request to " + target.getName() + " has expired.", NamedTextColor.RED));
-                target.sendMessage(Component.text("Teleport request from " + sender.getName() + " has expired.", NamedTextColor.GRAY));
+                sender.sendMessage(getMessage("tpa.request-expired-sender", "%target%", target.getName()));
+                target.sendMessage(getMessage("tpa.request-expired-receiver", "%sender%", sender.getName()));
             }
         }, expiryDuration * 20L);
 
@@ -215,7 +278,7 @@ public class TpaCommand implements CommandExecutor {
         }
 
         Player sender = Bukkit.getPlayer(req.senderId());
-        outboundTrackers.remove(req.senderId()); // Unlock outbound tracker map constraints immediately
+        outboundTrackers.remove(req.senderId());
 
         if (sender == null) {
             target.sendMessage(Component.text("The player who sent this request is no longer online.", NamedTextColor.RED));
@@ -223,8 +286,8 @@ public class TpaCommand implements CommandExecutor {
         }
 
         if (!accept) {
-            sender.sendMessage(Component.text(target.getName() + " denied your request.", NamedTextColor.RED));
-            target.sendMessage(Component.text("Request denied successfully.", NamedTextColor.YELLOW));
+            sender.sendMessage(getMessage("tpa.sender-denied", "%target%", target.getName()));
+            target.sendMessage(getMessage("tpa.receiver-denied"));
             plugin.getSoundEngine().playSoundProfile(target, "sounds.deny");
             plugin.getSoundEngine().playSoundProfile(sender, "sounds.deny");
             return;
@@ -233,8 +296,8 @@ public class TpaCommand implements CommandExecutor {
         Player traveller = req.isHereRequest() ? target : sender;
         Player destination = req.isHereRequest() ? sender : target;
 
-        sender.sendMessage(Component.text(target.getName() + " accepted your request. Preparing teleportation warp...", NamedTextColor.GREEN));
-        target.sendMessage(Component.text("Request accepted. Preparing warm-up...", NamedTextColor.GREEN));
+        sender.sendMessage(getMessage("tpa.sender-accepted", "%target%", target.getName()));
+        target.sendMessage(getMessage("tpa.receiver-accepted"));
 
         startTeleportCountdown(traveller, destination);
     }
@@ -244,13 +307,8 @@ public class TpaCommand implements CommandExecutor {
             activeCountdowns.get(traveller.getUniqueId()).cancel();
         }
 
-        // Cache absolute block grids to avoid cancellation via mouse look movements
         final Location startLocTraveller = traveller.getLocation().getBlock().getLocation();
-        final Location startLocDestination = destination.getLocation().getBlock().getLocation();
-
-        // Play Creeper warning fuse hiss sound triggers
         traveller.playSound(traveller.getLocation(), Sound.ENTITY_CREEPER_PRIMED, SoundCategory.MASTER, 1.0f, 0.5f);
-        destination.playSound(destination.getLocation(), Sound.ENTITY_CREEPER_PRIMED, SoundCategory.MASTER, 1.0f, 0.5f);
 
         BukkitTask task = new BukkitRunnable() {
             int secondsRemaining = 3;
@@ -264,42 +322,26 @@ public class TpaCommand implements CommandExecutor {
                 }
 
                 Location currentLocTraveller = traveller.getLocation().getBlock().getLocation();
-                Location currentLocDestination = destination.getLocation().getBlock().getLocation();
 
-                // STILLNESS DETECTORS: Cancel task iterations early if block maps fluctuate
                 if (!currentLocTraveller.equals(startLocTraveller)) {
                     cancelCountdown(traveller.getUniqueId(), traveller);
-                    destination.sendMessage(Component.text("Teleport cancelled: The moving player broke stillness rules.", NamedTextColor.RED));
-                    this.cancel();
-                    return;
-                }
-
-                if (!currentLocDestination.equals(startLocDestination)) {
-                    cancelCountdown(traveller.getUniqueId(), destination);
-                    traveller.sendMessage(Component.text("Teleport cancelled: The target destination moved.", NamedTextColor.RED));
+                    destination.sendMessage(getMessage("tpa.countdown-traveller-moved"));
                     this.cancel();
                     return;
                 }
 
                 if (secondsRemaining > 0) {
-                    // FIX: Replaced direct .bold(boolean) with standard type-safe TextDecoration maps
-                    Component titleText = Component.text(secondsRemaining + "...", TextColor.color(0xFF5555)).decoration(TextDecoration.BOLD, true);
-                    Component subtitleText = Component.text("Do not move!", NamedTextColor.GRAY);
+                    Component titleText = getMessage("tpa.countdown-title", "%seconds%", String.valueOf(secondsRemaining));
+                    Component subtitleText = getMessage("tpa.countdown-subtitle");
                     Title title = Title.title(titleText, subtitleText, Title.Times.times(Duration.ZERO, Duration.ofMillis(1100), Duration.ZERO));
 
                     traveller.showTitle(title);
-                    destination.showTitle(title);
-
                     traveller.playSound(traveller.getLocation(), Sound.BLOCK_NOTE_BLOCK_CHIME, SoundCategory.MASTER, 0.6f, 1.0f);
-                    destination.playSound(destination.getLocation(), Sound.BLOCK_NOTE_BLOCK_CHIME, SoundCategory.MASTER, 0.6f, 1.0f);
 
                     secondsRemaining--;
                 } else {
-                    // FIX: Replaced direct .bold(boolean) here as well
-                    Component wrapTitle = Component.text("WARPED!", TextColor.color(0x55FF55)).decoration(TextDecoration.BOLD, true);
-                    Title endTitle = Title.title(wrapTitle, Component.empty(), Title.Times.times(Duration.ZERO, Duration.ofMillis(500), Duration.ofMillis(250)));
+                    Title endTitle = Title.title(getMessage("tpa.warped-title"), Component.empty(), Title.Times.times(Duration.ZERO, Duration.ofMillis(500), Duration.ofMillis(250)));
                     traveller.showTitle(endTitle);
-                    destination.showTitle(endTitle);
 
                     traveller.teleportAsync(destination.getLocation()).thenAccept(success -> {
                         if (success) {
@@ -314,17 +356,17 @@ public class TpaCommand implements CommandExecutor {
                     this.cancel();
                 }
             }
-        }.runTaskTimer(plugin, 0L, 20L); // Execute once per second (every 20 ticks)
+        }.runTaskTimer(plugin, 0L, 20L);
 
         activeCountdowns.put(traveller.getUniqueId(), task);
     }
 
-    private void cancelCountdown(UUID travellerId, Player playerWhoMoved) {
+    private void cancelCountdown(UUID travellerId, Player traveller) {
         activeCountdowns.remove(travellerId);
-        if (playerWhoMoved != null) {
-            playerWhoMoved.sendMessage(Component.text("Teleportation cancelled because you moved your position!", NamedTextColor.RED));
-            playerWhoMoved.playSound(playerWhoMoved.getLocation(), Sound.ENTITY_ITEM_BREAK, SoundCategory.MASTER, 0.8f, 0.5f);
-            playerWhoMoved.clearTitle();
+        if (traveller != null) {
+            traveller.sendMessage(getMessage("tpa.countdown-cancelled"));
+            traveller.playSound(traveller.getLocation(), Sound.ENTITY_ITEM_BREAK, SoundCategory.MASTER, 0.8f, 0.5f);
+            traveller.clearTitle();
         }
     }
 }

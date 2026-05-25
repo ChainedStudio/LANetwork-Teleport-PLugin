@@ -4,27 +4,35 @@ import lanetwork.commands.TpaCommand;
 import lanetwork.events.SoundEngine;
 import lanetwork.events.TeleportEngine;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.File;
 import java.util.List;
 
 public final class Teleport extends JavaPlugin {
 
     private SoundEngine soundEngine;
+    private FileConfiguration messagesConfig;
+    private File messagesFile;
 
     @Override
     public void onEnable() {
+        // Save and update standard configuration layers
         this.saveDefaultConfig();
         validateAndInjectConfigDefaults();
 
-        // 1. Initialize the Sound Engine Framework
+        // Initialize dynamic localization configurations
+        loadMessagesConfig();
+
+        // 1. Initialize the Sound Engine
         this.soundEngine = new SoundEngine(this);
 
-        // 2. Instantiate handlers
+        // 2. Instantiate Handlers
         TpaCommand tpaEngine = new TpaCommand(this);
         TeleportEngine engine = new TeleportEngine(this);
 
-        // 3. Register TPA Command Executors
+        // 3. Register TPA Subsystem Commands
         String[] tpaCommands = {
                 "tpa", "tpaauto", "tpahere", "tpahereall",
                 "tpaccept", "tpadeny", "tpatoggle", "tpaignore", "tpaunignore", "debug"
@@ -37,25 +45,35 @@ public final class Teleport extends JavaPlugin {
             }
         }
 
-        // 4. Register Engine & GUI Menu Core Commands directly to our unified handler
-        String[] engineCommands = {"rtp", "rtpmenu", "teleportconfig", "teleportadmin", "ta"};
+        // 4. Register Main Teleportation and GUI Engine Commands
+        // FIX: Added "teleportconfig" and "rtpmenu" to ensure they map back to TeleportEngine correctly
+        String[] engineCommands = {
+                "rtp", "rtpmenu", "teleportconfig", "teleportadmin", "ta"
+        };
+
         for (String cmd : engineCommands) {
             var pluginCmd = this.getCommand(cmd);
             if (pluginCmd != null) {
                 pluginCmd.setExecutor(engine);
                 pluginCmd.setTabCompleter(engine);
-            } else {
-                this.getLogger().warning("Command '" + cmd + "' is missing from plugin.yml!");
             }
         }
-
-        // 5. Register GUI event listener safely
-        this.getServer().getPluginManager().registerEvents(engine, this);
-        this.getLogger().info("LanetworkTeleport engine systems linked successfully.");
     }
 
     public SoundEngine getSoundEngine() {
         return this.soundEngine;
+    }
+
+    public FileConfiguration getMessagesConfig() {
+        return this.messagesConfig;
+    }
+
+    public void loadMessagesConfig() {
+        messagesFile = new File(getDataFolder(), "messages.yml");
+        if (!messagesFile.exists()) {
+            saveResource("messages.yml", false);
+        }
+        messagesConfig = YamlConfiguration.loadConfiguration(messagesFile);
     }
 
     private void validateAndInjectConfigDefaults() {
@@ -75,15 +93,6 @@ public final class Teleport extends JavaPlugin {
             config.set(owPath + "lore", List.of("§7Click to execute a random teleport"));
             config.set(owPath + "action-type", "WORLD");
             config.set(owPath + "action-target", "world");
-
-            String netherPath = "gui.items.nether_button.";
-            config.set(netherPath + "material", "minecraft:netherrack");
-            config.set(netherPath + "slot", 15);
-            config.set(netherPath + "name", "§c§lNether Wastes");
-            config.set(netherPath + "lore", List.of("§7Click to execute a random teleport"));
-            config.set(netherPath + "action-type", "WORLD");
-            config.set(netherPath + "action-target", "world_nether");
-
             modified = true;
         }
 
