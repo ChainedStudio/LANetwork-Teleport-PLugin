@@ -1,6 +1,7 @@
 package lanetwork.teleport;
 
 import lanetwork.commands.TpaCommand;
+import lanetwork.events.SoundEngine;
 import lanetwork.events.TeleportEngine;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -9,55 +10,69 @@ import java.util.List;
 
 public final class Teleport extends JavaPlugin {
 
+    private SoundEngine soundEngine;
+
     @Override
     public void onEnable() {
-
         this.saveDefaultConfig();
         validateAndInjectConfigDefaults();
-        TpaCommand tpaEngine = new TpaCommand();
+
+        // 1. Initialize the Sound Engine Framework
+        this.soundEngine = new SoundEngine(this);
+
+        // 2. Instantiate handlers
+        TpaCommand tpaEngine = new TpaCommand(this);
         TeleportEngine engine = new TeleportEngine(this);
 
-        this.getCommand("tpa").setExecutor(tpaEngine);
-        this.getCommand("tpaauto").setExecutor(engine);
-        this.getCommand("tpahere").setExecutor(tpaEngine);
-        this.getCommand("tpahereall").setExecutor(tpaEngine);
-        this.getCommand("tpaccept").setExecutor(tpaEngine);
-        this.getCommand("tpadeny").setExecutor(tpaEngine);
-        this.getCommand("tpatoggle").setExecutor(tpaEngine);
-        this.getCommand("tpaignore").setExecutor(tpaEngine);
-        this.getCommand("tpaunignore").setExecutor(tpaEngine);
-        this.getCommand("teleportconfig").setExecutor(engine);
-        this.getCommand("rtp").setExecutor(engine);
-        this.getCommand("rtpmenu").setExecutor(engine);
+        // 3. Register TPA Command Executors
+        String[] tpaCommands = {
+                "tpa", "tpaauto", "tpahere", "tpahereall",
+                "tpaccept", "tpadeny", "tpatoggle", "tpaignore", "tpaunignore", "debug"
+        };
 
+        for (String cmd : tpaCommands) {
+            var pluginCmd = this.getCommand(cmd);
+            if (pluginCmd != null) {
+                pluginCmd.setExecutor(tpaEngine);
+            }
+        }
+
+        // 4. Register Engine & GUI Menu Core Commands directly to our unified handler
+        String[] engineCommands = {"rtp", "rtpmenu", "teleportconfig", "teleportadmin", "ta"};
+        for (String cmd : engineCommands) {
+            var pluginCmd = this.getCommand(cmd);
+            if (pluginCmd != null) {
+                pluginCmd.setExecutor(engine);
+                pluginCmd.setTabCompleter(engine);
+            } else {
+                this.getLogger().warning("Command '" + cmd + "' is missing from plugin.yml!");
+            }
+        }
+
+        // 5. Register GUI event listener safely
         this.getServer().getPluginManager().registerEvents(engine, this);
+        this.getLogger().info("LanetworkTeleport engine systems linked successfully.");
     }
+
+    public SoundEngine getSoundEngine() {
+        return this.soundEngine;
+    }
+
     private void validateAndInjectConfigDefaults() {
         FileConfiguration config = this.getConfig();
         boolean modified = false;
 
-        if (!config.contains("tpa.timeout")) { config.set("tpa.timeout", 60); modified = true; }
-        if (!config.contains("rtp.min-radius")) { config.set("rtp.min-radius", 1000); modified = true; }
-        if (!config.contains("rtp.max-radius")) { config.set("rtp.max-radius", 5000); modified = true; }
-        if (!config.contains("rtp.max-attempts")) { config.set("rtp.max-attempts", 15); modified = true; }
-
-        if (!config.contains("messages.prefix")) { config.set("messages.prefix", "<gold>[LANetwork]</gold> "); modified = true; }
-        if (!config.contains("messages.no-permission")) { config.set("messages.no-permission", "<red>You do not have permission to execute this!</red>"); modified = true; }
-        if (!config.contains("messages.rtp-searching")) { config.set("messages.rtp-searching", "<yellow>Locating a safe landing zone...</yellow>"); modified = true; }
-        if (!config.contains("messages.rtp-success")) { config.set("messages.rtp-success", "<green>Successfully teleported to coordinates: <gold>%x%, %y%, %z%</gold>!</green>"); modified = true; }
-
-        if (!config.contains("gui.title")) { config.set("gui.title", "§6§lRTP Destination Selection"); modified = true; }
-        if (!config.contains("gui.background-item")) { config.set("gui.background-item", "minecraft:gray_stained_glass_pane"); modified = true; }
+        if (!config.contains("sounds.send-request")) { config.set("sounds.send-request", "ENTITY_EXPERIENCE_ORB_PICKUP"); modified = true; }
+        if (!config.contains("sounds.receive-request")) { config.set("sounds.receive-request", "BLOCK_NOTE_BLOCK_CHIME"); modified = true; }
+        if (!config.contains("sounds.teleport")) { config.set("sounds.teleport", "ENTITY_ENDERMAN_TELEPORT"); modified = true; }
+        if (!config.contains("sounds.deny")) { config.set("sounds.deny", "BLOCK_ANVIL_LAND"); modified = true; }
 
         if (!config.contains("gui.items") || config.getConfigurationSection("gui.items") == null || config.getConfigurationSection("gui.items").getKeys(false).isEmpty()) {
             String owPath = "gui.items.overworld_button.";
             config.set(owPath + "material", "minecraft:grass_block");
             config.set(owPath + "slot", 11);
             config.set(owPath + "name", "§a§lOverworld Dimension");
-            config.set(owPath + "lore", List.of(
-                    "§7Click to execute a random teleport",
-                    "§7within the native overworld surface area."
-            ));
+            config.set(owPath + "lore", List.of("§7Click to execute a random teleport"));
             config.set(owPath + "action-type", "WORLD");
             config.set(owPath + "action-target", "world");
 
@@ -65,10 +80,7 @@ public final class Teleport extends JavaPlugin {
             config.set(netherPath + "material", "minecraft:netherrack");
             config.set(netherPath + "slot", 15);
             config.set(netherPath + "name", "§c§lNether Wastes");
-            config.set(netherPath + "lore", List.of(
-                    "§7Click to execute a random teleport",
-                    "§7safely through the nether ceiling."
-            ));
+            config.set(netherPath + "lore", List.of("§7Click to execute a random teleport"));
             config.set(netherPath + "action-type", "WORLD");
             config.set(netherPath + "action-target", "world_nether");
 
@@ -78,9 +90,5 @@ public final class Teleport extends JavaPlugin {
         if (modified) {
             this.saveConfig();
         }
-    }
-    @Override
-    public void onDisable() {
-        // Plugin shutdown logic
     }
 }

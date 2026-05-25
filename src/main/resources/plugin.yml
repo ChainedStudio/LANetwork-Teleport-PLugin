@@ -41,3 +41,6 @@ commands:
   teleportconfig:
     description: Control administration reloads live or open configuration GUI.
     usage: /teleportconfig reload
+  debug:
+    description: Toggles administrative universal solo-testing parameter overrides on/off.
+    permission: lanetwork.admin
